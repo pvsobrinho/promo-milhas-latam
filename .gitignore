@@ -28,6 +28,9 @@ htmlcov/
 # === Chaves / segredos ===
 .env
 
+# === Imagens geradas pelo robô (CSV não é ignorado) ===
+prints_milhas/
+
 # === Sistema ===
 .DS_Store
 Thumbs.db
