@@ -39,7 +39,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 ORIGEM = ''
 DESTINO = ''
 ANO = 2026  # Ano da busca; dia e mês são lidos do mini-print (área ao redor do cursor)
-NUM_ITERACOES = 20
+NUM_ITERACOES = 30
 
 POSICAO_CLIQUE = (1747, 729)
 DELAY_INICIAL = 5
@@ -64,9 +64,17 @@ RESEND_FROM = "Pomo Milhas <onboarding@resend.dev>"  # com domínio verificado: 
 ASSUNTO_EMAIL_CONCLUIDO = "Promoção Milhas LATAM - processamento do robô concluído"
 ASSUNTO_EMAIL_ERRO = "Promoção Milhas LATAM - erro na extração"
 ASSUNTO_EMAIL_SEM_RESULTADOS = "Promoção Milhas LATAM - sem resultados"
+ASSUNTO_EMAIL_INTERROMPIDO = "Promoção Milhas LATAM - processo interrompido"
+
+# Em caso de erro na extração: F5, esperar 10 s, repetir até 3x; após 3 falhas seguidas interrompe e envia e-mail
+MAX_TENTATIVAS_ATUALIZAR = 3
+DELAY_APOS_F5 = 10  # segundos para a página carregar após atualizar
 
 diretorio_saida = "prints_milhas"
 os.makedirs(diretorio_saida, exist_ok=True)
+# Pasta onde os CSV são salvos
+PASTA_CSV = "CSV"
+os.makedirs(PASTA_CSV, exist_ok=True)
 # Pasta de destino das imagens ao final do processamento (OneDrive)
 PASTA_DESTINO_IMAGENS = r"C:\Users\paulo\OneDrive\00-LATAM_AIRLINES\pesquisa_robo_milhas"
 
@@ -178,9 +186,9 @@ def extrair_data_do_mini_print(imagem_pil):
         return None
 
 
-# CSV: durante a execução usa arquivo parcial; ao final usa nome com intervalo + data de hoje
+# CSV: durante a execução usa arquivo parcial; ao final usa nome com intervalo + data de hoje (todos na pasta CSV)
 hoje_nome = datetime.now().strftime("%d_%m_%Y").replace("/", "_")  # ex.: 14_03_2026
-csv_saida_parcial = f"milhas_{ORIGEM}_{DESTINO}_parcial_{hoje_nome}.csv"
+csv_saida_parcial = os.path.join(PASTA_CSV, f"milhas_{ORIGEM}_{DESTINO}_parcial_{hoje_nome}.csv")
 data_atual = datetime(ANO, 1, 1)  # fallback se OCR do mini-print falhar
 
 INTERVALO_CHECKPOINT_CSV = 15  # a cada 15 iterações salva o CSV (para não perder dados)
@@ -314,6 +322,8 @@ def mover_imagens_para_destino():
 
 
 # Loop principal: em cada iteração, mini-print em POSICAO_CLIQUE antes do clique para capturar a data da tela
+erros_extracao_consecutivos = 0  # ao chegar em 3: F5 já foi feito 3x, interrompe
+processo_interrompido = False
 while tentativas < NUM_ITERACOES:
     print(f"\n📅 Iteração {tentativas + 1}")
     time.sleep(DELAY_CARREGAMENTO_TELA)
@@ -373,19 +383,31 @@ while tentativas < NUM_ITERACOES:
         print(f"🕒 Horário detectado: {horario_voo}")
         print(f"🔍 Milhas extraídas: {milhas_dia}")
         print(f"✅ Menor valor do dia {data_formatada}: {menor} milhas")
+        erros_extracao_consecutivos = 0  # sucesso: zera contador de falhas
     else:
-        print("❌ Não foi possível extrair milhas válidas. Tentando novamente esta mesma data.")
-        msg_erro = (
-            "Promoção Milhas LATAM – erro na extração\n\n"
-            f"Rota: {ORIGEM} → {DESTINO}\n"
-        )
-        if data_primeira and data_ultima:
-            msg_erro += f"Pesquisa feita de {data_primeira} a {data_ultima}\n\n"
-        msg_erro += (
-            f"Data da busca (voo na tela): {data_formatada}\n\n"
-            "Não foi possível extrair milhas válidas para esta data."
-        )
-        enviar_email(ASSUNTO_EMAIL_ERRO, msg_erro)
+        # Erro na extração: F5, esperar 10 s, repetir a mesma iteração (até 3x)
+        if erros_extracao_consecutivos < MAX_TENTATIVAS_ATUALIZAR:
+            erros_extracao_consecutivos += 1
+            print(f"❌ Erro na extração. Atualizando página (F5) — tentativa {erros_extracao_consecutivos}/{MAX_TENTATIVAS_ATUALIZAR}...")
+            pyautogui.press("f5")
+            time.sleep(DELAY_APOS_F5)
+            print(f"⏳ Aguardou {DELAY_APOS_F5} s. Repetindo a mesma iteração.")
+            continue  # repete a iteração sem avançar
+        else:
+            print("❌ Processo interrompido: erro na extração após atualizar a página 3 vezes.")
+            processo_interrompido = True
+            corpo_interrompido = (
+                "Promoção Milhas LATAM – processo interrompido\n\n"
+                f"Rota: {ORIGEM} → {DESTINO}\n"
+            )
+            if data_primeira and data_ultima:
+                corpo_interrompido += f"Pesquisa feita de {data_primeira} a {data_ultima}\n\n"
+            corpo_interrompido += (
+                f"Data da última tentativa: {data_formatada}\n\n"
+                "O processo foi interrompido após atualizar a página (F5) 3 vezes seguidas por falha na extração de milhas."
+            )
+            enviar_email(ASSUNTO_EMAIL_INTERROMPIDO, corpo_interrompido)
+            break
 
     # Só depois de processar e salvar: clica para avançar (próximo dia)
     pyautogui.click(POSICAO_CLIQUE)
@@ -399,11 +421,11 @@ while tentativas < NUM_ITERACOES:
         salvar_csv(csv_saida_parcial, milhas_extraidas)
         print(f"💾 Checkpoint CSV salvo ({tentativas} iterações): {csv_saida_parcial}")
 
-# Nome final do CSV: origem_destino_data_inicial_a_data_final_data_hoje
+# Nome final do CSV: origem_destino_data_inicial_a_data_final_data_hoje (na pasta CSV)
 if data_primeira and data_ultima:
     data_ini_nome = data_primeira.replace("/", "_")   # 10/05/2026 -> 10_05_2026
     data_fim_nome = data_ultima.replace("/", "_")
-    csv_saida_final = f"milhas_{ORIGEM}_{DESTINO}_{data_ini_nome}_a_{data_fim_nome}_{hoje_nome}.csv"
+    csv_saida_final = os.path.join(PASTA_CSV, f"milhas_{ORIGEM}_{DESTINO}_{data_ini_nome}_a_{data_fim_nome}_{hoje_nome}.csv")
 else:
     csv_saida_final = csv_saida_parcial
 salvar_csv(csv_saida_final, milhas_extraidas)
@@ -436,32 +458,33 @@ intervalo_busca = ""
 if data_primeira and data_ultima:
     intervalo_busca = f"Pesquisa feita de {data_primeira} a {data_ultima}"
 
-# Notificação por e-mail ao final do processamento
-if milhas_extraidas:
-    linhas = [
-        "Promoção Milhas LATAM – processamento do robô concluído",
-        f"Rota: {ORIGEM} → {DESTINO}",
-        f"Datas processadas: {len(milhas_extraidas)}",
-    ]
-    if intervalo_busca:
-        linhas.append(intervalo_busca)
-    linhas.extend(["", "Top 3 menores preços:"])
-    for i, (data, milhas, horario) in enumerate(top_3, 1):
-        linhas.append(f"  {i}. {data} às {horario}: {milhas} milhas")
-    if top_10_datas_diferentes:
-        linhas.append("")
-        linhas.append("Outras 10 opções de voos com datas diferentes:")
-        for i, (data, milhas, horario) in enumerate(top_10_datas_diferentes, 1):
+# Notificação por e-mail ao final do processamento (não envia se já interrompeu e enviou e-mail de interrupção)
+if not processo_interrompido:
+    if milhas_extraidas:
+        linhas = [
+            "Promoção Milhas LATAM – processamento do robô concluído",
+            f"Rota: {ORIGEM} → {DESTINO}",
+            f"Datas processadas: {len(milhas_extraidas)}",
+        ]
+        if intervalo_busca:
+            linhas.append(intervalo_busca)
+        linhas.extend(["", "Top 3 menores preços:"])
+        for i, (data, milhas, horario) in enumerate(top_3, 1):
             linhas.append(f"  {i}. {data} às {horario}: {milhas} milhas")
-    corpo = "\n".join(linhas)
-    enviar_email(ASSUNTO_EMAIL_CONCLUIDO, corpo)
-else:
-    corpo_sem_resultados = (
-        f"Promoção Milhas LATAM ({ORIGEM} → {DESTINO}) finalizou, mas nenhum valor em milhas foi extraído."
-    )
-    if intervalo_busca:
-        corpo_sem_resultados = intervalo_busca + "\n\n" + corpo_sem_resultados
-    enviar_email(ASSUNTO_EMAIL_SEM_RESULTADOS, corpo_sem_resultados)
+        if top_10_datas_diferentes:
+            linhas.append("")
+            linhas.append("Outras 10 opções de voos com datas diferentes:")
+            for i, (data, milhas, horario) in enumerate(top_10_datas_diferentes, 1):
+                linhas.append(f"  {i}. {data} às {horario}: {milhas} milhas")
+        corpo = "\n".join(linhas)
+        enviar_email(ASSUNTO_EMAIL_CONCLUIDO, corpo)
+    else:
+        corpo_sem_resultados = (
+            f"Promoção Milhas LATAM ({ORIGEM} → {DESTINO}) finalizou, mas nenhum valor em milhas foi extraído."
+        )
+        if intervalo_busca:
+            corpo_sem_resultados = intervalo_busca + "\n\n" + corpo_sem_resultados
+        enviar_email(ASSUNTO_EMAIL_SEM_RESULTADOS, corpo_sem_resultados)
 
 # Após enviar o e-mail: apagar mini-prints (manter só prints de tela inteira)
 print("\n🗑️ Removendo mini-prints...")
