@@ -134,10 +134,21 @@ def extrair_data_do_mini_print(imagem_pil):
         return None
 
 
-# CSV: nome genérico (a data vem do mini-print em cada iteração)
-nome_base_csv = f"milhas_{ORIGEM}_{DESTINO}"
-csv_saida = f"{nome_base_csv}.csv"
+# CSV: durante a execução usa arquivo parcial; ao final usa nome com intervalo + data de hoje
+hoje_nome = datetime.now().strftime("%d_%m_%Y").replace("/", "_")  # ex.: 14_03_2026
+csv_saida_parcial = f"milhas_{ORIGEM}_{DESTINO}_parcial_{hoje_nome}.csv"
 data_atual = datetime(ANO, 1, 1)  # fallback se OCR do mini-print falhar
+
+INTERVALO_CHECKPOINT_CSV = 15  # a cada 15 iterações salva o CSV (para não perder dados)
+
+
+def salvar_csv(caminho: str, dados: list):
+    """Grava o CSV com as colunas Data, Milhas, Horario."""
+    with open(caminho, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Data", "Milhas", "Horario"])
+        for data, milhas, horario in dados:
+            writer.writerow([data, milhas, horario])
 
 
 def processar_ocr(imagem_path):
@@ -309,12 +320,26 @@ while tentativas < NUM_ITERACOES:
 
     tentativas += 1
 
-# Salvar CSV
-with open(csv_saida, mode='w', newline='', encoding='utf-8') as file:
-    writer = csv.writer(file)
-    writer.writerow(["Data", "Milhas", "Horario"])
-    for data, milhas, horario in milhas_extraidas:
-        writer.writerow([data, milhas, horario])
+    # A cada 15 iterações (a partir da 15ª) salva o CSV para não perder dados (energia, etc.)
+    if tentativas >= INTERVALO_CHECKPOINT_CSV and tentativas % INTERVALO_CHECKPOINT_CSV == 0:
+        salvar_csv(csv_saida_parcial, milhas_extraidas)
+        print(f"💾 Checkpoint CSV salvo ({tentativas} iterações): {csv_saida_parcial}")
+
+# Nome final do CSV: origem_destino_data_inicial_a_data_final_data_hoje
+if data_primeira and data_ultima:
+    data_ini_nome = data_primeira.replace("/", "_")   # 10/05/2026 -> 10_05_2026
+    data_fim_nome = data_ultima.replace("/", "_")
+    csv_saida_final = f"milhas_{ORIGEM}_{DESTINO}_{data_ini_nome}_a_{data_fim_nome}_{hoje_nome}.csv"
+else:
+    csv_saida_final = csv_saida_parcial
+salvar_csv(csv_saida_final, milhas_extraidas)
+print(f"💾 CSV final salvo: {csv_saida_final}")
+if csv_saida_final != csv_saida_parcial and os.path.isfile(csv_saida_parcial):
+    try:
+        os.remove(csv_saida_parcial)
+        print(f"   Arquivo parcial removido: {csv_saida_parcial}")
+    except OSError:
+        pass
 
 # Top 3 menores valores (global — pode repetir data)
 top_3 = heapq.nsmallest(3, milhas_extraidas, key=lambda x: x[1])
