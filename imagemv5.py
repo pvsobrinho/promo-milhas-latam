@@ -1,5 +1,7 @@
 import os
 import time
+import json
+import urllib.request
 import webbrowser
 from urllib.parse import quote
 import pyautogui
@@ -9,6 +11,24 @@ import heapq
 import pytesseract
 import csv
 from datetime import datetime, timedelta
+
+
+def _carregar_dotenv():
+    """Carrega variáveis do arquivo .env na pasta do projeto (para RESEND_API_KEY sem reiniciar o IDE)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                if key and value:
+                    os.environ.setdefault(key, value)
+
+
+_carregar_dotenv()
 
 # Caminho do Tesseract
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -30,9 +50,13 @@ VALOR_MINIMO_VALIDO = 1500
 MINI_PRINT_LARGURA = 480
 MINI_PRINT_ALTURA = 90
 
-# E-mail: mailto — abre o cliente de e-mail com a mensagem pronta. Sem senha, você só clica em Enviar.
+# E-mail: direto do Python (sem abrir Outlook, sem senha Microsoft)
 EMAIL_ENABLED = True
-EMAIL_DESTINO = "paulo.sobrinho@outlook.com.br"
+# Resend sem domínio verificado só envia para o e-mail da conta. Use o mesmo e-mail do login Resend.
+# Para enviar a outro e-mail (ex.: Outlook), verifique um domínio em resend.com/domains e use RESEND_FROM com esse domínio.
+EMAIL_DESTINO = "paulovictor.s2013@gmail.com"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM = "Pomo Milhas <onboarding@resend.dev>"  # com domínio verificado: use algo como notificacoes@seudominio.com
 
 diretorio_saida = "prints_milhas"
 os.makedirs(diretorio_saida, exist_ok=True)
@@ -132,9 +156,44 @@ def processar_ocr(imagem_path):
 
 
 def enviar_email(assunto: str, corpo: str) -> bool:
-    """Abre o cliente de e-mail (mailto) com destino, assunto e corpo. Sem senha — você só clica em Enviar."""
+    """Envia e-mail: se RESEND_API_KEY estiver definida, envia pela API (sem abrir programa).
+    Caso contrário, abre o mailto (Outlook) para você clicar em Enviar."""
     if not EMAIL_ENABLED or not (EMAIL_DESTINO or "").strip():
         return False
+    api_key = (RESEND_API_KEY or "").strip()
+    if api_key:
+        try:
+            req = urllib.request.Request(
+                "https://api.resend.com/emails",
+                data=json.dumps({
+                    "from": RESEND_FROM,
+                    "to": [EMAIL_DESTINO.strip()],
+                    "subject": assunto,
+                    "text": corpo,
+                }).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "PomoMilhas/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    print("📧 E-mail enviado para", EMAIL_DESTINO, "(Resend API, sem abrir Outlook).")
+                    return True
+        except urllib.error.HTTPError as e:
+            print(f"❌ Erro ao enviar e-mail (Resend): {e.code} {e.reason}")
+            try:
+                body = e.read().decode()
+                print(f"   Resposta: {body[:200]}")
+            except Exception:
+                pass
+            return False
+        except Exception as e:
+            print(f"❌ Erro ao enviar e-mail: {e}")
+            return False
+    # Fallback: mailto (abre o cliente)
     try:
         url = (
             "mailto:"
@@ -145,7 +204,7 @@ def enviar_email(assunto: str, corpo: str) -> bool:
             + quote(corpo, safe="")
         )
         webbrowser.open(url)
-        print("📧 Cliente de e-mail aberto para", EMAIL_DESTINO, "— clique em Enviar (sem senha no script).")
+        print("📧 RESEND_API_KEY não definida. Cliente de e-mail aberto — clique em Enviar.")
         return True
     except Exception as e:
         print(f"❌ Erro ao abrir e-mail: {e}")

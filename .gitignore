@@ -25,6 +25,9 @@ coverage/
 htmlcov/
 .pytest_cache/
 
+# === Chaves / segredos ===
+.env
+
 # === Sistema ===
 .DS_Store
 Thumbs.db
