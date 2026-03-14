@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import shutil
 import urllib.request
 import webbrowser
 from urllib.parse import quote
@@ -34,10 +35,11 @@ _carregar_dotenv()
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # === CONFIGURAÇÕES ===
-ORIGEM = 'CGH'
-DESTINO = 'SSA'
-ANO = 2026  # Ano da busca; dia e mês são lidos do primeiro print (área ao redor do cursor)
-NUM_ITERACOES = 60
+# Origem e destino: capturados do primeiro print (códigos IATA ao lado dos horários). Fallback se OCR falhar:
+ORIGEM = ''
+DESTINO = ''
+ANO = 2026  # Ano da busca; dia e mês são lidos do mini-print (área ao redor do cursor)
+NUM_ITERACOES = 20
 
 POSICAO_CLIQUE = (1747, 729)
 DELAY_INICIAL = 5
@@ -65,16 +67,58 @@ ASSUNTO_EMAIL_SEM_RESULTADOS = "Promoção Milhas LATAM - sem resultados"
 
 diretorio_saida = "prints_milhas"
 os.makedirs(diretorio_saida, exist_ok=True)
+# Pasta de destino das imagens ao final do processamento (OneDrive)
+PASTA_DESTINO_IMAGENS = r"C:\Users\paulo\OneDrive\00-LATAM_AIRLINES\pesquisa_robo_milhas"
 
 print("⏳ Aguarde 5 segundos. Deixe a página da LATAM com a primeira data visível...")
 time.sleep(DELAY_INICIAL)
-print(f"⏳ Mais {DELAY_PRIMEIRO_PRINT} segundos. Capturando a data em POSICAO_CLIQUE (1747, 729)...")
+print(f"⏳ Mais {DELAY_PRIMEIRO_PRINT} segundos. Capturando primeiro print (origem/destino)...")
 time.sleep(DELAY_PRIMEIRO_PRINT)
 
 milhas_extraidas = []
 tentativas = 0
 data_primeira = None  # primeira data da busca (para intervalo no e-mail)
 data_ultima = None    # última data da busca (para intervalo no e-mail)
+path_primeiro_print = None  # preenchido após captura; usado na 1ª iteração
+
+
+def extrair_origem_destino(imagem_path):
+    """Extrai códigos IATA origem e destino do print da LATAM (ex.: GRU e THE ao lado dos horários 14:30, 17:35).
+    Retorna (origem, destino) ou (None, None)."""
+    try:
+        imagem = Image.open(imagem_path)
+        imagem = imagem.convert("L")
+        imagem = imagem.filter(ImageFilter.SHARPEN)
+        enhancer = ImageEnhance.Contrast(imagem)
+        imagem = enhancer.enhance(2)
+        imagem = imagem.point(lambda x: 0 if x < 140 else 255)
+        texto = pytesseract.image_to_string(imagem, lang="eng")
+        # Padrão: horário (HH:MM) seguido de código 3 letras maiúsculas (IATA), ex.: "14:30 GRU" ou "17:35 THE"
+        codigos = re.findall(r"\d{1,2}\s*:\s*\d{2}\s*([A-Z]{3})\b", texto)
+        if not codigos:
+            codigos = re.findall(r"\b([A-Z]{3})\b", texto)
+        # Primeiros dois códigos diferentes = origem e destino
+        vistos = []
+        for c in codigos:
+            if c not in vistos and len(c) == 3:
+                vistos.append(c)
+                if len(vistos) >= 2:
+                    return (vistos[0], vistos[1])
+        return (None, None)
+    except Exception as e:
+        print(f"❌ Erro ao extrair origem/destino: {e}")
+        return (None, None)
+
+
+# Primeiro print: tira screenshot e extrai origem e destino (códigos IATA ao lado dos horários)
+path_primeiro_print = os.path.join(diretorio_saida, "_captura_origem_destino.png")
+pyautogui.screenshot(path_primeiro_print)
+origem_ocr, destino_ocr = extrair_origem_destino(path_primeiro_print)
+if origem_ocr and destino_ocr:
+    ORIGEM, DESTINO = origem_ocr, destino_ocr
+    print(f"✈️ Origem e destino capturados do print: {ORIGEM} → {DESTINO}")
+else:
+    print(f"⚠️ Origem/destino não detectados no print. Usando config: {ORIGEM} → {DESTINO}")
 
 
 def _ocr_data_em_imagem(img_pil, lang="eng"):
@@ -247,6 +291,28 @@ def apagar_mini_prints():
         print(f"🗑️ {apagados} mini-print(s) removido(s). Prints de tela inteira mantidos.")
 
 
+def mover_imagens_para_destino():
+    """Move todas as imagens da pasta prints_milhas para PASTA_DESTINO_IMAGENS."""
+    if not os.path.isdir(diretorio_saida):
+        return
+    os.makedirs(PASTA_DESTINO_IMAGENS, exist_ok=True)
+    movidos = 0
+    for nome in os.listdir(diretorio_saida):
+        if nome.lower().endswith((".png", ".jpg", ".jpeg")):
+            origem = os.path.join(diretorio_saida, nome)
+            if not os.path.isfile(origem):
+                continue
+            destino = os.path.join(PASTA_DESTINO_IMAGENS, nome)
+            try:
+                shutil.move(origem, destino)
+                movidos += 1
+                print(f"   Movido: {nome}")
+            except (OSError, shutil.Error) as e:
+                print(f"   Não foi possível mover {nome}: {e}")
+    if movidos:
+        print(f"📁 {movidos} imagem(ns) movida(s) para {PASTA_DESTINO_IMAGENS}")
+
+
 # Loop principal: em cada iteração, mini-print em POSICAO_CLIQUE antes do clique para capturar a data da tela
 while tentativas < NUM_ITERACOES:
     print(f"\n📅 Iteração {tentativas + 1}")
@@ -279,8 +345,16 @@ while tentativas < NUM_ITERACOES:
     print(f"🖼️ Mini-print salvo: {path_mini}")
 
     nome_arquivo = os.path.join(diretorio_saida, f"milhas_{ORIGEM}_{DESTINO}_{nome_data}.png")
-    pyautogui.screenshot(nome_arquivo)
-    print(f"🖼️ Screenshot salva: {nome_arquivo}")
+    if tentativas == 0 and path_primeiro_print and os.path.isfile(path_primeiro_print):
+        try:
+            os.rename(path_primeiro_print, nome_arquivo)
+            print(f"🖼️ Screenshot (1ª iter, do primeiro print): {nome_arquivo}")
+        except OSError:
+            pyautogui.screenshot(nome_arquivo)
+            print(f"🖼️ Screenshot salva: {nome_arquivo}")
+    else:
+        pyautogui.screenshot(nome_arquivo)
+        print(f"🖼️ Screenshot salva: {nome_arquivo}")
 
     milhas_dia, horario_voo = processar_ocr(nome_arquivo)
 
@@ -392,3 +466,7 @@ else:
 # Após enviar o e-mail: apagar mini-prints (manter só prints de tela inteira)
 print("\n🗑️ Removendo mini-prints...")
 apagar_mini_prints()
+
+# Último passo: mover todas as imagens restantes para a pasta do OneDrive
+print("\n📁 Movendo imagens para pasta de destino...")
+mover_imagens_para_destino()
