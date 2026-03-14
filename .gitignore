@@ -1,0 +1,31 @@
+# === IDEs / editores ===
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.code-workspace
+
+# === Python ===
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# === Testes / cobertura ===
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# === Sistema ===
+.DS_Store
+Thumbs.db
+*.log
