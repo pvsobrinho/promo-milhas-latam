@@ -16,6 +16,17 @@ DATA_FINAL = '2025-09-30'
 data_atual = datetime.strptime(DATA_INICIAL, '%Y-%m-%d')
 data_final = datetime.strptime(DATA_FINAL, '%Y-%m-%d')
 
+# Diagnóstico opcional antes de abrir o navegador.
+from analise_financeira import analisar_viabilidade
+
+saldo_informado = input("Quantas milhas você tem? (ENTER para pular): ").strip()
+if saldo_informado:
+    try:
+        saldo_milhas = int(saldo_informado.replace(".", ""))
+        print(f"Diagnóstico financeiro: {analisar_viabilidade(saldo_milhas)}")
+    except ValueError:
+        print("Saldo inválido. Seguindo com a pesquisa normalmente.")
+
 # Setup do navegador sem perfil
 options = Options()
 options.add_argument("--start-maximized")
